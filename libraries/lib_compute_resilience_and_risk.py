@@ -18,7 +18,8 @@ from libraries.lib_scaleout import get_scaleout_recipients
 from libraries.lib_gather_data import social_to_tx_and_gsp
 from libraries.lib_fiji_sps import run_fijian_SPP, run_fijian_SPS
 from libraries.pandas_helper import get_list_of_index_names, broadcast_simple, concat_categories
-from libraries.lib_country_dir import get_to_USD, get_subsistence_line, average_over_rp, average_over_rp1, get_all_hazards, get_middleclass_range
+from libraries.lib_country_dir import get_to_USD, get_subsistence_line, average_over_rp, average_over_rp1, get_all_hazards
+#, get_middleclass_range
 
 pd.set_option('display.width', 220)
 
