@@ -1,5 +1,14 @@
+#input data files
+inputs/
+
 # Intermediate files for hh_resilience project
 tmp/
+intermediate/
+
+#output files
+optimization_libs/
+output_country/
+output_plots/
 
 # Python specific git-ignores
 # Byte-compiled / optimized / DLL files

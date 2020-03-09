@@ -8,15 +8,12 @@ from libraries.lib_drought import *
 from libraries.lib_gather_data import *
 from libraries.plot_hist import plot_simple_hist
 from libraries.pandas_helper import categorize_strings
-#
-# country-specific
-from libraries.lib_RO_housing_plots import housing_plots
 
 pd.set_option('display.width', 220)
 sns.set_style('whitegrid')
 sns_pal = sns.color_palette('Set1', n_colors=8, desat=.5)
 
-global model
+global model_
 model = os.getcwd()
 
 # People/hh will be affected or not_affected, and helped or not_helped
@@ -51,6 +48,7 @@ def set_directories(myCountry):  # get current directory
     """
     global inputs, intermediate
     inputs        = model+'/../inputs/'+myCountry+'/'       # get inputs data directory
+    print(inputs)
     intermediate  = model+'/../intermediate/'+myCountry+'/' # get outputs data directory
 
     # If the depository directories don't exist, create one:
@@ -64,13 +62,13 @@ def set_directories(myCountry):  # get current directory
     return intermediate
 
 def get_economic_unit(myC):
+    if myC == 'AR': return 'PROVINCIA'#'province'
     if myC == 'PH': return 'region'#'province'
     if myC == 'FJ': return 'Division'#'tikina'
     if myC == 'SL': return 'district'
     if myC == 'MW': return 'district'
     if myC == 'RO': return 'Region'
     if myC == 'BO': return 'departamento'
-    if myC == 'AM': return 'Region'
     assert(False)
 
 def get_currency(myC):
@@ -81,7 +79,10 @@ def get_currency(myC):
     'MW': ['MWK',1.E9,1./724.64],
     'BO': ['BoB',1.E9,1./6.9],
     'RO': ['RON',1.E9,1/4.166667],
-    'AM': ['AMD',1.E9,1/477.]
+    #SDT check this currency, multiplier, and exchange rate (X as of 11.12.2019)
+    #2019 -'AR': ['ARS',1.E3,1/59.7] 
+    #2012/2013
+    'AR': ['ARS',1.E9,1/4.5] 
     }
     try:
         return d[myC]
@@ -141,11 +142,11 @@ def get_places(myC):
         RO_hhid = get_hhid_elements(myC)
         # nrgl	= Order number of the household within the place of residence
 
-        # Load df0 <- this is going to be the master index of households in RO
+        # Load df0 <- this is going to me the master index of households in RO
         hbs_str = inputs+'ROU_2016_HBS_v01_M/Data/Stata/s0.dta'
         df0 = pd.read_stata(hbs_str).rename(columns=hbs_dict)[RO_hhid+['ri','hhwgt']].set_index(RO_hhid)
 
-        # BELOW: i think cuts these are duplicative, ie hhwgt=0 when hh refused interview
+        # BELOW: i think these are duplicative, ie hhwgt=0 when hh refused interview
         df0 = df0.loc[(df0['hhwgt']!=0)&(df0['ri']=='The household accepts the interview')]
         df0 = df0.drop('ri',axis=1)
 
@@ -172,17 +173,11 @@ def get_places(myC):
         assert(df.loc[df.index.duplicated(keep=False)].shape[0]==0)
 
 
-        # "County" field is populated with garbage!
+        # "County" field is populated with garbage
         df = df.set_index(economy)['pcwgt'].sum(level=economy).to_frame()
         df.columns = ['pop']
 
-        # Replace region code with region name
-        df = df.reset_index()
-        _,region_dict = get_places_dict(myC)
-        df['Region'] = df['Region'].replace(region_dict)
-        return df.set_index('Region')
-
-        #return df
+        return df
 
     if myC == 'PH':
         df = pd.read_excel(inputs+'population_2015.xlsx',sheet_name='population').set_index('province').rename(columns={'population':'psa_pop'})
@@ -249,6 +244,14 @@ def get_places(myC):
         df_agg = df_agg.sort_values(by='population',ascending=False)
 
         return df_agg
+    
+    if myC == 'AR':
+        df = pd.read_csv(inputs+'ENGHo - Hogares.txt', sep="|", decimal = ",").set_index('PROVINCIA').dropna(how='all')[['CANTMIEM','EXPAN']].prod(axis=1).sum(level='PROVINCIA').to_frame()
+        df.columns = ['population']
+        df = df.rename(columns={'CANTMIEM':'hhsize','EXPAN':'pcwgt'})
+        #print('THIS IS THE FIRST POPULATION:' , df['population'])
+        print(df)
+        return df
 
     else: return None
 
@@ -301,11 +304,16 @@ def get_places_dict(myC):
         r_code = pd.read_csv(inputs+'region_info.csv')[['HBS_code','Region']].set_index('HBS_code').dropna(how='all').squeeze()
         r_code.index = r_code.index.astype(int)
 
+    #sdt 11.11 - need to read in provinces here (ge province names from ENGHO)
+    if myC == 'AR':
+        #p_code = pd.read_csv(inputs + 'ENGHo - Provincias.txt', sep="|")[['PROVINCIA','DESCRIPCION']].set_index('PROVINCIA').squeeze()
+        p_code = pd.read_csv(inputs + 'Provincias_Regiones.csv', sep=",")[['PROVINCIA','province']].set_index('PROVINCIA').squeeze()
+        p_code.index = p_code.index.astype(int)
+
     try: p_code = p_code.to_dict()
     except: pass
     try: r_code = r_code.to_dict()
     except: pass
-
     return p_code,r_code
 
 def load_survey_data(myC):
@@ -352,21 +360,16 @@ def load_survey_data(myC):
         df['hhsoc'] *= 52.
         df['pcsoc'] = df.eval('hhsoc/hhsize')
         #
-        df['ispoor'] = df.pcinc<get_poverty_line('RO')
-        #
-        _mc_lo,_mc_hi = get_middleclass_range('RO')
-        df['ismiddleclass'] = (df.pcinc>=_mc_lo)&(df.pcinc<=_mc_hi)
+        df['ispoor'] = 0
         #
         #print(df[['pcinc','pcwgt']].prod(axis=1).sum()/df['pcwgt'].sum())
         #print(df[['pcsoc','pcwgt']].prod(axis=1).sum()/df['pcwgt'].sum())
         #
-        
-        # Load: construction materials
-        _df = pd.read_stata(inputs+'ROU_2016_HBS_v01_M/Data/Stata/s10a.dta').rename(columns=hbs_dict)
-        _df[RO_hhid] = _df[RO_hhid].astype('int')
-        housing_plots(RO_hhid,df,_df)
 
-        _df = _df.set_index(RO_hhid).rename(columns={'MATCONS':'walls'})[['walls']]
+        # Load: construction materials
+        _df = pd.read_stata(inputs+'ROU_2016_HBS_v01_M/Data/Stata/s10a.dta').rename(columns=hbs_dict).rename(columns={'MATCONS':'walls'})[RO_hhid+['walls']]
+        _df[RO_hhid] = _df[RO_hhid].astype('int')
+        _df = _df.set_index(RO_hhid)[['walls']]
         df = pd.merge(df.reset_index(),_df.reset_index(),on=RO_hhid).set_index(RO_hhid)
 
         # LOAD: has_ew
@@ -384,14 +387,13 @@ def load_survey_data(myC):
         df = df.reset_index(['Region'])
         df['Region'] = df['Region'].replace(region_dict)
         df = df.reset_index().set_index(RO_hhid)
-        
+
         df['c'] = df['pcinc'].copy()
         #df['social'] = df.eval('pcsoc/pcinc')
 
         # pop & write out hh savings & loans/credit
         pd.concat([df['hhid']]+[df.pop(x) for x in ['precautionary_savings','loans_and_credit']], 1).to_csv('../intermediate/RO/hh_savings.csv')
-
-
+    
     elif myC == 'MW':
 
         df_agg = pd.read_stata(inputs+'consumption_aggregates_poverty_ihs4.dta').set_index(['case_id']).dropna(how='all')
@@ -638,11 +640,14 @@ def load_survey_data(myC):
                                                     'income_ganyu','income_crop_wet', 'income_crop_dry', 'income_permcrop','income_livestock', 'income_animprod',
                                                     'ag_input_cost']]]
 
+        #print(df.loc[(df.impact_drought==1)&(df.pcinc_ag_net>0),'pcwgt'].sum()/df.loc[(df.pcinc_ag_net>0),'pcwgt'].sum())
+        #print(df.loc[(df.impact_drought==1)&(df.pcinc_ag_net==0),'pcwgt'].sum()/df.loc[(df.pcinc_ag_net==0),'pcwgt'].sum())
+
         print('Setting c to pcinc')
         df['c'] = df['pcinc'].copy()
 
         df = df.reset_index().set_index('district').drop([_i for _i in ['index'] if _i in df.columns])
-
+    
     elif myC == 'PH':
         df = pd.read_csv(inputs+'fies2015.csv')[['w_regn','w_prov','w_mun','w_bgy','w_ea','w_shsn','w_hcn',
                                                  'walls','roof',
@@ -775,39 +780,6 @@ def load_survey_data(myC):
         df = df.reset_index().set_index(['w_regn','w_prov','w_mun','w_bgy','w_ea','w_shsn','w_hcn'])
         df = df.drop([_c for _c in ['country','decile_nat','decile_reg','est_sav','tot_savings','savings','invest',
                                     'precautionary_savings','index','level_0','cash_domestic'] if _c in df.columns],axis=1)
-
-        # Standardize province info
-        prov_code,region_code = get_places_dict(myC)
-
-        df = df.reset_index()
-        get_hhid_FIES(df)
-        df = df.rename(columns={'w_prov':'province','w_regn':'region'}).reset_index()
-        df['province'].replace(prov_code,inplace=True)     
-        df['region'].replace(region_code,inplace=True)
-        df = df.reset_index().set_index(get_economic_unit(myC)).drop(['index','level_0'],axis=1)
-        #
-        #print(df.head())
-        #assert(False)
-        #
-        #get_hhid_FIES(cat_info)
-        #cat_info = cat_info.rename(columns={'w_prov':'province','w_regn':'region'}).reset_index()
-        #cat_info['province'].replace(prov_code,inplace=True)     
-        #cat_info['region'].replace(region_code,inplace=True)
-        #cat_info = cat_info.reset_index().set_index(economy).drop(['index','level_0'],axis=1)
-        
-        # There's no region info in df--put that in...
-        #df = df.reset_index().set_index('province')
-        #cat_info = cat_info.reset_index().set_index('province')
-        #df['region'] = cat_info[~cat_info.index.duplicated(keep='first')].region
-        
-        #try: df.reset_index()[['province','region']].to_csv('../inputs/PH/prov_to_reg_dict.csv',header=True)
-        #except: print('Could not update regional-provincial dict')
-        
-        # Manipulate PSA (non-FIES) dataframe
-        #df = df.reset_index().set_index(economy)
-        #df['psa_pop'] = df.sum(level=economy)
-        #df = df.mean(level=economy)
-
     elif myC == 'FJ':
 
         # This is an egregious hack, but deadlines are real
@@ -939,6 +911,7 @@ def load_survey_data(myC):
         df = df.rename(columns={'HHID':'hhid'})
         print('Setting c to pcinc')
         df['c'] = df['pcinc'].copy()
+
     elif myC == 'SL':
 
         # Gets household weights from file (created in get_places)
@@ -1289,7 +1262,184 @@ def load_survey_data(myC):
         # [economy,'province','hhid','region','pcwgt','aewgt','hhwgt','code','np','score','v','c','pcsoc','social','c_5','hhsize',
                         # 'hhsize_ae','gamma_SP','k','quintile','ispoor','pcinc','aeinc','pcexp','pov_line','SP_FAP','SP_CPP','SP_SPS','nOlds',
                         # 'has_ew','SP_PBS','SP_FNPF','SPP_core','SPP_add','axfin','pcsamurdhi','gsp_samurdhi','frac_remittance','N_children']
+    elif myC == 'AR':
+        df_ingresos = pd.read_csv(inputs+'ENGHo - Ingresos.txt', sep="|", decimal  = ",")[[#'REGION','SUBREGION', 'PROVINCIA','EXPAN', 
+                                                                 'CLAVE', 'MIEMBRO', 
+                                                                 #'CONDOCUP', 'CATOCUP', 'CP24','CATOCUP_S', 'CATOCUP_A',
+                                                                 'INGTOTP',
+                                                                 # 'M_INGTOTP', 'INGTOTP_IMP', 'CANTFTOT', 'CANTFIMP', 'INGLABT', 'M_INGLABT', 
+                                                                 #'INGLABT_IMP', 'INGOCPAL', 'M_INGOCPAL', 'INGOCSEC', 'M_INGOCSEC', 
+                                                                 #'INGOCANT',  'M_INGOCANT', 'IJUBILACION', 'M_IJUBILACION', 'IRENTAS','M_IRENT', 
+                                                                'ITRANSFERMON'
+                                                                #, 'M_ITRANSFERMON',  'IAUTOCONSUMO', 'M_IAUTOCONSUMO'
+                                                                ]]
+        df_ingresos = df_ingresos.rename(columns={'INGTOTP':'pcinc','CLAVE':'hhid','INGTOTP':'pcinc','ITRANSFERMON' :'hhsoc'}).set_index('hhid')
+        #print(df_ingresos.shape)
 
+        # #SDT NOte: 11.11 Currently using Lulu's processed data - need to get code file to translate original data to python to calculate same values from original survey
+        # df_WB = pd.read_stata(inputs+'ARG_ENGHO_2012-2013.dta')[['clave','expan','cantmiem','gasto_veca','gasto_viv','gasto_ens',
+        #                                                     'gasto_sal','ing_mon','ing_lab_mon','ing_ren_mon','ing_trspri_mon',
+        #                                                     'ing_trsgob_mon','ing_nomon','ing_lab_nomon','ict','ing_lab','ing_trspri',
+        #                                                     'ing_trsgob','ing_ren','gasto_alihogar','gasto_alifuera','gasto_ali',
+        #                                                     'gasto_alta','gasto_vag','gasto_vele','gasto_vgn','gasto_vk','gasto_vleca',
+        #                                                     'gasto_votr','gasto_vcon','gasto_trans','gasto_tga','gasto_tdyg','gasto_tgnc',
+        #                                                     'gasto_totcomb','gasto_tserv','gasto_totros','gasto_tman','gasto_tadq',
+        #                                                     'gasto_com','gasto_edre','gasto_otros','gct']]
+
+        # df_WB = df_WB.rename(columns={'clave':'hhid','ict':'hhinc','cantmiem':'hhsize','expan':'hhwgt','ing_trsgob_mon':'hhsoc'}).set_index('hhid')
+        # #df_WB.to_csv(inputs+'ARG_ENGHO_2012-2013_test.csv')
+
+        df_personas =pd.read_csv(inputs+'ENGHo - Personas.txt', sep="|",decimal=',', low_memory = False)[['REGION','CP02','CP12',
+                                                #'CP10','CP16A','CP30','CP43','CT05','CATOCUP_A','G911', 
+                                                #'SUBREGION','CP11','CP17','CP31','CP44','CT06','COMED','PERC_TRABAJO',
+                                                'PROVINCIA',
+                                                #'CP12','CP18','CP32','CP45','CT07','TCOMED2','JUBPEN',
+                                                'CLAVE',
+                                                #'CP13','CP19','CP33','CP46','GRUPEDAD','TCOMED3','PERC_PRODPROP',
+                                                'EXPAN',
+                                                #'CP14_01','CP20','CP34','CP47','GRUPEDAD2','PERCEPT','PERC_TRANSFERENCIAS',
+                                                'MIEMBRO',
+                                                #'CP14_02','CP21','CP35','CP48','GRUPEDAD3','SITOCUP','PERC_RENTAS',
+                                                #'CP02','CP14_03','CP22','CP36','CP49','GRUPEDAD4','BENEFPLAN',
+                                                'ADEQUI'
+                                                #'CP03','CP14_04','CP23','CP37','CP50','NIVINS','COMEAFUERA',
+                                                #'CP04','CP14_05','CP24','CP38_01','CP51','NIVELEDING','USATRANSP',
+                                                #'CP05','CP14_06','CP25','CP38_02','CP52','NIVELED2','GASTOTC4',
+                                                #'CP06','CP14_07','CP26','CP39','CP53','ASISTE','G131',
+                                                #'CP07','CP14_09','CP27','CP40','CT02','CONDOCUP','G612',
+                                                #'CP08','CP15','CP28','CP41','CT03','CATOCUP','G611',
+                                                #'CP09','CP16','CP29','CP42','CT04','CATOCUP_S','G623'
+                                                ]]
+
+        df_personas = df_personas.rename(columns={'CLAVE':'hhid','EXPAN':'hhwgt','CP02':'Age', 'CP12':'Sex'}).set_index('hhid')
+        #print(df_personas.shape)
+
+        df_hogares = pd.read_csv(inputs+'ENGHo - Hogares.txt', sep="|",decimal=',', low_memory = False)[[#'REGION','SUBREGION','PROVINCIA', 'EXPAN',
+                            'CLAVE', 'AÑO','TRIMESTRE', 'CV1B05','CV1B06','CH13_A','CH13_B', 'REGTEN',
+                            #'CV1A01','CV1A02', 'CV1B01_A','CV1B01_B', 'CV1B01_C','CV1B02', 'CV1B03','CV1B04', 'CV1B05','CV1B06','CV1B07','CV1B08', 'CV1B09',
+                            #'CV1B10', 'CV1B11','CV1B12', 'CV1C01','CH01_A', 'CH01_B','CH01_C', 'CH01_D','CH02_A', 'CH02_B','CH03', 'CH04','CH05', 'CH06','CH07', 
+                            #'CH08','CH09', 'CH10','CH11', 'CH12','CH13_A','CH13_B','CH14','CH15','JSEXO','JEDAD','JGRUPEDAD','JCOMED2','JCOMED3','JCONDOCUP',
+                            #'JCATOCUP_S','JCATOCUP_A','JNIVINS','JSITOCUP','JCATOCUP','JCOMED',
+                            'CANTMIEM',
+                            #'MENOR14','MAYOR65','CANTPING','PERMIEOC','TASADEP',
+                            'CANTADEQUI'
+                            #,'MIEMAGRUP','CANTOCUP','REGTEN','PROPAUTO','PROPAUTO2','TIPOHOG','GC_1','GC_2','GC_3','GC_4','GC_5','GC_6','GC_7','GC_8',
+                            #'GC_9','GASTOT','FP_CONTADO','FP_CREDITO','FP_TRABAJO','FP_TARJETAS','FP_OTRAS','FP_INDEF','TN_AUTOSERV','TN_COMEDOR','TN_RESTAURANT',
+                            #'TN_ESPECIE','TN_INTERNET','TN_HIPSUP','TN_OTROS','TN_INDEF','INGTOTH','INGPCH','MINGTOTH','MINGPCH','M_NRING','GASCOMP','GASVENT'
+                            ]]
+
+        #df_hogares = df_hogares.rename(columns={'CLAVE':'clave','INGTOTH':'hhinc','CANTMIEM':'hhsize','EXPAN':'hhwgt','ing_trsgob_mon':'hhsoc', 'CANTADEQUI':'AE'}).set_index('clave')
+        df_hogares = df_hogares.rename(columns={'CLAVE':'hhid','CANTADEQUI':'AE', 'CANTMIEM':'hhsize','CV1B05':'walls', 'CV1B06':'floors', 'CH13_A': 'Cellphone', 'CH13_B': 'Telephone', 'REGTEN': 'tenure'}).set_index('hhid')
+        #print(df_hogares.shape)
+       
+        #df = pd.merge(left=df_WB,right=df_hogares, left_on='hhid', right_on='hhid')
+        df  = pd.merge(left=df_personas, right=df_hogares, how = 'left',left_on='hhid', right_on='hhid' )
+        
+        df =  pd.merge(left=df, right=df_ingresos, how='left', left_on=['hhid','MIEMBRO'], right_on=['hhid','MIEMBRO'])
+
+        #df.rename(columns={'REGION_y': 'REGION', 'SUBREGION_x': 'SUBREGION'}, inplace=True)
+        #df.drop(['SUBREGION_y', 'REGION_x', 'EXPAN_x', 'PROVINCIA_y', 'EXPAN_y','PROVINCIA_x'],axis = 1, inplace= True)
+
+  
+        df['pov_line'] = 0.
+
+        #print(df.PROVINCIA_y.head(20))
+        
+        #df['pov_line'] = get_poverty_line(myC)
+       
+
+        #get regional poverty line (canasta de alimentos basicos)
+        df.loc[df['REGION']==1,'pov_line'] = get_poverty_line(myC,reg=1)
+        df.loc[df['REGION']==2,'pov_line'] = get_poverty_line(myC,reg=2)
+        df.loc[df['REGION']==3,'pov_line'] = get_poverty_line(myC,reg=3)
+        df.loc[df['REGION']==4,'pov_line'] = get_poverty_line(myC,reg=4)
+        df.loc[df['REGION']==5,'pov_line'] = get_poverty_line(myC,reg=5)
+        df.loc[df['REGION']==6,'pov_line'] = get_poverty_line(myC,reg=6)
+
+        #get regional subsistence rate 
+        df.loc[df['REGION']==1,'sub_line'] = get_subsistence_line(myC,reg=1)
+        df.loc[df['REGION']==2,'sub_line'] = get_subsistence_line(myC,reg=2)
+        df.loc[df['REGION']==3,'sub_line'] = get_subsistence_line(myC,reg=3)
+        df.loc[df['REGION']==4,'sub_line'] = get_subsistence_line(myC,reg=4)
+        df.loc[df['REGION']==5,'sub_line'] = get_subsistence_line(myC,reg=5)
+        df.loc[df['REGION']==6,'sub_line'] = get_subsistence_line(myC,reg=6)
+
+    
+        #generate hhinc from pcinc
+        df['hhinc'] = df.groupby(['hhid'])['pcinc'].transform(np.sum)
+        df['hh_pov_line'] = df['pov_line']*df['AE']
+        df['hh_sub_line'] =df['sub_line']*df['AE']
+
+        # This is 'Adult Equivalents' for each HH
+        df['hhsize_ae'] = df['AE'] 
+        # note that WB work uses a slightly different calculation of AE consistent w/ 1996/1997 survey
+        # this could be concorded but has not been as of 1.15  but does not significantly alter the calculations
+
+        #calculate weightings for expanding the per capita and adult equivalent to full population
+        df['pcwgt'] = df[['hhsize','hhwgt']].prod(axis=1)
+        df['aewgt'] = df[['AE','hhwgt']].prod(axis=1)
+
+        #calculate per capita and AE income 
+        #df['pcinc'] = df['hhinc']/df['hhsize']
+        df['aeinc'] = df['hhinc']/df['hhsize_ae']
+
+        df['pcsoc']    = df['hhsoc']/df['hhsize']
+
+        #old code calculating house characteristics and warning reachable
+        # df_housing = pd.read_csv(inputs + 'ENGHo - Hogares.txt', sep = "|", decimal  = ",").dropna(how='all')[['CLAVE','CV1B05',
+        #  'CV1B06','CH13_A','CH13_B', 'REGTEN']]
+        #df_housing = df_housing.rename(columns={'CLAVE': 'hhid','CV1B05':'walls', 'CV1B06':'floors', 'CH13_A': 'Cellphone', 'CH13_B': 'Telephone', 'REGTEN': 'tenure'}).set_index('hhid')
+       
+        #calculates early warning system
+        df['has_ew'] = df[['Telephone','Cellphone']].sum(axis=1).clip(upper=1)
+        df = df.drop(['Telephone', 'Cellphone'],axis=1)
+
+        #old code calculating the demographics of retirees
+        #df_dems = pd.read_excel(inputs+'HIES 2013-14 Demographic Data.xlsx',sheet_name='Sheet1').set_index('HHID').dropna(how='all')[['Poor','Age']].fillna(0)
+        #df_dems = pd.read_csv(inputs+'ENGHo - Personas.txt',sep = "|", decimal  = ",").dropna(how='all')[['CLAVE','CP02','CP12']].fillna(0)
+        #df_dems = df_dems.rename(columns={'CLAVE': 'hhid','CP02':'Age', 'CP12':'Sex'}).set_index('hhid')
+
+        #Calculates Retiree pension benefit eligibility
+        #old defined as pension benefit eligible - 65 for men, 60 for women (CP02 - edad, CP12 - sexo, ingresos)
+        df['isOld'] = 0
+        df.loc[(df.Age >=65) & (df.Sex ==1) | (df.Age >=60) & (df.Sex ==2) ,'isOld'] = 1
+        df['nOlds'] = df['isOld'].sum(level='hhid')
+
+        #Drops columns used to calculate number of elderly 
+        df = df[~df.index.duplicated(keep='first')].drop(['Age','isOld'],axis=1)
+
+        df = df.reset_index().set_index(['PROVINCIA'])
+           
+        #df = df.rename(columns={'Poor':'ispoor'})
+        #identifying poor households based on national poverty line 
+        #SDt note  need to find a provincial level poverty line
+        # Set flag for whether household is poor
+        # Merge the poverty dataframe by name
+        # df = pd.merge(df.reset_index(),sl_pov_by_dist.reset_index(),on='dist_name').reset_index().set_index(['District','hhid']).drop(['index','level_0'],axis=1)
+        # assert(df['pov_line'].dropna().shape[0] == df['pov_line'].shape[0]) # <-- check that all districts have a poverty line
+        # If per person income is lower than the poverty line, set ispoor = True
+        
+        df['ispoor'] = False
+        df.loc[df['hhinc']<df['hh_pov_line'],'ispoor']=True
+        #df.loc[df['pcinc']<df['pov_line'],'ispoor'] = True
+        print('Poverty rate:\n',100.*df.loc[df.ispoor==True,'pcwgt'].sum()/df['pcwgt'].sum())
+
+
+        hhno,hhsum = 0,0
+        while (hhno < df.shape[0]) and (hhsum < 25000):
+            hhsum = df.iloc[:hhno].hhwgt.sum()
+            hhno+=1
+        df.iloc[:hhno].SPP_core = True
+        hhno_add, hhsum_add = hhno, 0
+        while (hhno_add < df.shape[0]) and (hhsum_add < 29000):
+            hhsum_add = df.iloc[hhno:hhno_add].hhwgt.sum()
+            hhno_add+=1
+        df.iloc[hhno:hhno_add].SPP_add = True
+
+        #df = df.rename(columns={'HHID':'hhid'})
+        print('Setting c to pcinc')
+        df['c'] = df['pcinc'].copy()
+        #df.to_csv(intermediate+'df.csv')
 
 
     # Assing weighted household consumption to quintiles within each province
@@ -1311,7 +1461,11 @@ def load_survey_data(myC):
     # Last thing: however 'c' was set (income or consumption), pcsoc can't be higher than 0.99*that!
     df['pcsoc'] = df['pcsoc'].clip(upper=0.99*df['c'])
     
+    #SDT testing output
+    df.to_csv(intermediate+'df.csv')
     return df
+
+    
 
 def get_df2(myC):
     if myC == 'PH':
@@ -1358,6 +1512,9 @@ def get_vul_curve(myC,struct):
     elif myC =='BO':
         df = pd.read_excel(inputs+'vulnerability_curves.xlsx',sheet_name=struct)[['key','v']]
         df = df.rename(columns={'key':'desc'})
+
+    elif myC == 'AR':
+         df = pd.read_excel(inputs+'vulnerability_curves_ENGHo.xlsx',sheet_name=struct)[['desc','v']]
     return df
 
 def get_infra_stocks_data(myC):
@@ -1374,6 +1531,8 @@ def get_wb_or_penn_data(myC):
     wb['Ktot'] = wb.gdp_pc_pp*wb['pop']/K.avg_prod_k
     wb['GDP'] = wb.gdp_pc_pp*wb['pop']
     wb['avg_prod_k'] = K.avg_prod_k
+    print(wb['avg_prod_k'])
+    assert(False)
 
     wb['iso2'] = names_to_iso2
     return wb.set_index('iso2').loc[myC,['Ktot','GDP','avg_prod_k']]
@@ -1791,6 +1950,12 @@ def get_hazard_df(myC,economy,agg_or_occ='Occ',rm_overlap=False,special_event=No
         # Why two copies of the same df?
         return df,df
 
+    elif myC == 'AR':
+        # this file is created in libraries/lib_collect_hazard_data_RO
+        df_haz = pd.read_csv('../inputs/AR/hazard/ssbn_derived_fas.csv').set_index(['PROVINCIA','hazard','rp'])
+        return df_haz[['fa']], df_haz[['fa']]
+        
+
     elif myC == 'RO':
 
         # this file is created in libraries/lib_collect_hazard_data_RO
@@ -1844,7 +2009,7 @@ def get_hazard_df(myC,economy,agg_or_occ='Occ',rm_overlap=False,special_event=No
         return df,df
     else: return None,None
 
-def get_poverty_line(myC,by_district=True,sec=None):
+def get_poverty_line(myC,by_district=True,sec=None, reg=None):
     """Get poverty line either as a Series (if by_district is True)
     or as a float (if by_district is False).
 
@@ -1889,26 +2054,47 @@ def get_poverty_line(myC,by_district=True,sec=None):
         # apply PPP to estimate 2016 value...
         pov_line *= 11445.5/11669.1
 
-    if myC == 'RO': pov_line = 40*1.719*365 # 1.729 = ppp conversion factor (2018) data.worldbank.org
-    if myC == 'BO': pov_line = 1.9*3.430*365 # 3.430 = ppp conv factor
+    if myC == 'RO': pov_line = 40*1.645*365
+    if myC == 'BO': pov_line = 365*1.90*3.43
+    
+    # Argentinian exchange rates are highly variable. Current ER is 59. but 2012-2013 avg was 5
+    if myC == 'AR' : 
+        if (reg== 1):
+             pov_line =	1265.3275
+        elif (reg== 2):
+            pov_line =	1266.2075
+        elif (reg== 3):
+            pov_line =	1031.955
+        elif (reg== 4):
+            pov_line =	1070.6025
+        elif (reg== 5):
+            pov_line =	1210.3225
+        elif (reg== 6):
+            pov_line =	1478.7575
+        else:
+            print('Pov line is variable by region for Argentina - Need to specify which you\'re looking for!')
+            pov_line = 0.0
+        # #poverty lines vary by region and are provided for poverty and indigence by quarter from the WB Argentina Poverty unit
+        # pov_line_reg = pd.read_csv(inputs+'canastas.csv', sep=",",decimal='.', low_memory = False)[['CANASTA','QTR','REG_NAME','VAL']]
+        # #collapse to annual average
+        # pov_lines = pov_line_reg.groupby(['CANASTA','REG_NAME']).mean().reset_index()
+        # #pov_lines.to_csv(intermediate+'/pov_lines_canasta.csv')
+        # #read in concordance and merge
+        # prov_to_region = pd.read_csv(inputs+'Provincias_Regiones.csv', sep=",",decimal='.', low_memory = False)[['PROVINCIA','DESCRIPCION','REGION','SUBREGION','REG_NAME']]
+        # pov_lines_prov = pd.merge(left=prov_to_region,right=pov_lines[['CANASTA','REG_NAME','VAL']], left_on='REG_NAME', right_on='REG_NAME')
+        # pov_line = 5.0 #pov_lines_prov[pov_lines_prov['CANASTA']=='cbt']
 
+        #pov_lines_prov.to_csv(intermediate+'/pov_lines.csv')    
+        # pov_line = 365*5.5*4.5/12
+        #if myC == 'AR': pov_line = 365/52*4*5.5*4.5#(~10000 pesos)
+        #if myC == 'AR': pov_line = 500
     return pov_line
 
-def get_middleclass_range(myC):
-    if myC == 'RO': 
-        _pl = get_poverty_line(myC)
-        _lower = _pl*(10/5.5)
-        _upper = _pl*(50./5.5)
-        #_upper = 
-    else: assert(False)
-    return(_lower,_upper)
-
-
-def get_subsistence_line(myC):
+def get_subsistence_line(myC, reg = None):
 
     if myC == 'PH': return 14832.0962*(22302.6775/21240.2924)
     elif myC == 'MW': return 85260.164
-    elif myC == 'RO': return 40.*(1.25/1.90)*1.719*365
+    elif myC == 'RO': return 40*(1.25/1.90)*1.645*365
     elif myC == 'SL':
         pov_line = float(pd.read_excel('../inputs/SL/poverty_def_by_district.xlsx').T.loc['National','2017 Aug Rs.']*12.)
         # apply PPP to estimate 2016 value...
@@ -1916,10 +2102,27 @@ def get_subsistence_line(myC):
         # scale from $1.90/day to $1.25/day
         return (1.09/1.25)*pov_line
     elif myC == 'BO': return 365*1.25*3.43
+    elif myC == 'AR':
+        if (reg== 1):
+             sub_line =	528.71
+        elif (reg== 2):
+            sub_line =	528.8625
+        elif (reg== 3):
+            sub_line =	465.6625
+        elif (reg== 4):
+            sub_line =  478.8225
+        elif (reg== 5):
+            sub_line =	474.17
+        elif (reg== 6):
+            sub_line =	543.5225
+        else:
+            print('sub line is variable by region for Argentina - Need to specify which youre looking for! using average sub_line as temporary')
+            sub_line = 503.29
 
     else:
         print('No subsistence info. Returning False')
         return False
+    return sub_line
 
 def get_to_USD(myC):
 
@@ -1929,7 +2132,9 @@ def get_to_USD(myC):
     if myC == 'MW': return 720.0
     if myC == 'RO': return 4.0
     if myC == 'BO': return 6.93
-    if myC == 'AM': return 477
+    if myC == 'AR': return 4.5 #2012/2013
+    #sdt exchange rate? 
+    
     assert(False)
 
 def get_pop_scale_fac(myC):
@@ -1944,6 +2149,9 @@ def get_avg_prod(myC):
     elif myC == 'MW': return 0.253076569219416
     elif myC == 'RO': return (277174.8438/1035207.75)
     elif myC == 'BO': return 0.4218342
+    elif myC == 'AR': return 0.309971556
+    #SDT AR calculated fom PWT 9.1 as cgdpo/(cn+ck) 1..14
+
     assert(False)
 
 def get_demonym(myC):
@@ -1954,6 +2162,7 @@ def get_demonym(myC):
     if myC == 'MW': return 'Malawians'
     if myC == 'RO': return 'Romanians'
     if myC == 'BO': return 'Bolivians'
+    if myC == 'AR': return 'Argentinians'
     return 'individuals'
 
 def scale_hh_income_to_match_GDP(df_o,new_total,flat=False):

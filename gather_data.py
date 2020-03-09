@@ -3,10 +3,10 @@
 # Restructured from the global model and developed by Jinqiang Chen and Brian Walsh
 
 # Compiler/Python interface (Magic)
-from IPython import get_ipython
-get_ipython().magic('reset -f')
-get_ipython().magic('load_ext autoreload')
-get_ipython().magic('autoreload 2')
+#from IPython import get_ipython
+#get_ipython().magic('reset -f')
+#get_ipython().magic('load_ext autoreload')
+#get_ipython().magic('autoreload 2')
 
 # Import packages for data analysis
 import matplotlib.pyplot as plt
@@ -16,6 +16,7 @@ from pandas import isnull
 import os, time
 import warnings
 import sys
+import pdb
 import pickle
 
 # Import local libraries
@@ -27,12 +28,8 @@ from libraries.replace_with_warning import *
 from libraries.lib_agents import optimize_reco
 from libraries.lib_urban_plots import run_urban_plots
 from libraries.lib_sp_analysis import run_sp_analysis
-from libraries.lib_gather_data import *
-from libraries.lib_make_regional_inputs_summary_table import *
-from libraries.lib_drought import get_agricultural_vulnerability_to_drought, get_ag_value
-#
 from special_events.cyclone_idai_mw import get_idai_loss
-#
+from libraries.lib_drought import get_agricultural_vulnerability_to_drought, get_ag_value
 warnings.filterwarnings('always',category=UserWarning)
 
 #####################################
@@ -67,7 +64,9 @@ event_level = [economy, 'hazard', 'rp']
 #Country dictionaries
 # df = state/province names
 df = get_places(myCountry)
-prov_code,region_code = get_places_dict(myCountry)
+print(get_places_dict(myCountry))
+prov_code, junk = get_places_dict(myCountry)
+
 
 ###Define parameters, all coming from lib_country_dir
 df['avg_prod_k']             = get_avg_prod(myCountry) # average productivity of capital, value from the global resilience model
@@ -94,6 +93,28 @@ cat_info = load_survey_data(myCountry)
 run_urban_plots(myCountry,cat_info.copy())
 print('Survey population:',cat_info.pcwgt.sum())
 
+#  below is messy--should be in <load_survey_data>
+if myCountry == 'PH':
+    
+    # Standardize province info
+    get_hhid_FIES(cat_info)
+    cat_info = cat_info.rename(columns={'w_prov':'province','w_regn':'region'}).reset_index()
+    cat_info['province'].replace(prov_code,inplace=True)     
+    cat_info['region'].replace(region_code,inplace=True)
+    cat_info = cat_info.reset_index().set_index(economy).drop(['index','level_0'],axis=1)
+
+    # There's no region info in df--put that in...
+    df = df.reset_index().set_index('province')
+    cat_info = cat_info.reset_index().set_index('province')
+    df['region'] = cat_info[~cat_info.index.duplicated(keep='first')].region
+
+    try: df.reset_index()[['province','region']].to_csv('../inputs/PH/prov_to_reg_dict.csv',header=True)
+    except: print('Could not update regional-provincial dict')
+
+    # Manipulate PSA (non-FIES) dataframe
+    df = df.reset_index().set_index(economy)
+    df['psa_pop'] = df.sum(level=economy)
+    df = df.mean(level=economy)
 
 cat_info = cat_info.reset_index().set_index([economy,'hhid'])
 try: cat_info = cat_info.drop('index',axis=1)
@@ -105,7 +126,10 @@ except: pass
 
 ########################################
 # Calculate regional averages from household info
+#sdt - this is being set below with the same function - not clear why being reset (produces nan though)
 df['gdp_pc_prov'] = cat_info[['pcinc','pcwgt']].prod(axis=1).sum(level=economy)/cat_info['pcwgt'].sum(level=economy)
+print('GDP per Prov!!!')
+print(df['gdp_pc_prov'])
 # ^ per capita income (in local currency), regional average
 df['gdp_pc_nat'] = cat_info[['pcinc','pcwgt']].prod(axis=1).sum()/cat_info['pcwgt'].sum()
 # ^ this is per capita income (local currency), national average
@@ -195,20 +219,23 @@ except: pass
 
 try:
     print('--> Individuals in poverty (inc):', float(round(cat_info.loc[(cat_info.pcinc <= cat_info.pov_line),'pcwgt'].sum()/1.E6,3)),'million')
-    print('-----> Households in poverty (inc):', float(round(cat_info.loc[(cat_info.pcinc <= cat_info.pov_line),'hhwgt'].sum()/1.E6,3)),'million')
+    print('-----> Households in poverty (inc):', float(round(cat_info.loc[(cat_info.hhinc <= cat_info.hh_pov_line),'hhwgt'].sum()/1.E6,3)),'million')
     print('-->          AE in poverty (inc):', float(round(cat_info.loc[(cat_info.aeinc <= cat_info.pov_line),'aewgt'].sum()/1.E6,3)),'million')
 except: pass
+
 
 try:
     print('-----> Children in poverty (inc):', float(round(cat_info.loc[(cat_info.pcinc <= cat_info.pov_line),['N_children','hhwgt']].prod(axis=1).sum()/1.E6,3)),'million')
     print('------> Individuals in poverty (exclusive):', float(round(cat_info.loc[cat_info.eval('pcinc<=pov_line & pcinc>sub_line'),'pcwgt'].sum()/1E6,3)),'million')
-    print('---------> Families in poverty (exclusive):', float(round(cat_info.loc[cat_info.eval('pcinc<=pov_line & pcinc>sub_line'),'hhwgt'].sum()/1E6,3)),'million')
+    print('---------> Families in poverty (exclusive):', float(round(cat_info.loc[cat_info.eval('pcinc<pov_line & pcinc>sub_line'),'hhwgt'].sum()/1E6,3)),'million')
     print('--> Individuals in subsistence (exclusive):', float(round(cat_info.loc[cat_info.eval('pcinc<=sub_line'),'pcwgt'].sum()/1E6,3)),'million')
     print('-----> Families in subsistence (exclusive):', float(round(cat_info.loc[cat_info.eval('pcinc<=sub_line'),'hhwgt'].sum()/1E6,3)),'million')
 except: print('No subsistence info...')
 
 print('\n--> Number in poverty (flagged poor):',float(round(cat_info.loc[(cat_info.ispoor==1),'pcwgt'].sum()/1E6,3)),'million')
 print('--> Poverty rate (flagged poor):',round(100.*cat_info.loc[(cat_info.ispoor==1),'pcwgt'].sum()/cat_info['pcwgt'].sum(),1),'%\n\n\n')
+
+print(cat_info['pcwgt'].sum(level=economy))
 
 # Save poverty_rate.csv, summary stats on poverty rate
 pd.DataFrame({'population':cat_info['pcwgt'].sum(level=economy),
@@ -220,7 +247,7 @@ pd.DataFrame({'population':cat_info['pcwgt'].sum(level=economy),
 try:
     print('\n--> Rural poverty (flagged poor):',float(round(cat_info.loc[(cat_info.ispoor==1)&(cat_info.isrural),'pcwgt'].sum()/1E6,3)),'million')
     print('\n--> Urban poverty (flagged poor):',float(round(cat_info.loc[(cat_info.ispoor==1)&~(cat_info.isrural),'pcwgt'].sum()/1E6,3)),'million')
-except: print('Sad fish')
+except: print('No rural/urban divide info')
 
 # Standardize--hhid should be lowercase
 cat_info = cat_info.rename(columns={'HHID':'hhid'})
@@ -255,6 +282,8 @@ if myCountry == 'FJ' or myCountry == 'RO' or myCountry == 'SL':
     df = df.reset_index()
     if myCountry == 'FJ' or myCountry == 'SL':
         df[economy] = df[economy].replace(prov_code)
+    if myCountry == 'RO':
+        df[economy] = df[economy].astype('int').replace(region_code)
 
     df = df.reset_index().set_index([economy])
     try: df = df.drop(['index'],axis=1)
@@ -278,11 +307,20 @@ elif myCountry == 'BO':
     cat_info = cat_info.reset_index()
     # cat_info[economy].replace(prov_code,inplace=True) # replace division code with its name
     cat_info = cat_info.reset_index().set_index([economy,'hhid']).drop(['index'],axis=1)
-    
+
+elif myCountry == 'AR':
+    df = df.reset_index()
+    df['PROVINCIA'] = df['PROVINCIA'].map(prov_code)
+    cat_info = cat_info.reset_index()
+    cat_info['PROVINCIA']= cat_info['PROVINCIA'].map(prov_code)   
+    print(cat_info['PROVINCIA'])
+    cat_info = cat_info.set_index(economy)
 
 ########################################
 # Calculate regional averages from household info
-df['gdp_pc_prov'] = cat_info[['pcinc','pcwgt']].prod(axis=1).sum(level=economy)/cat_info['pcwgt'].sum(level=economy)
+#df['gdp_pc_prov'] = cat_info[['pcinc','pcwgt']].prod(axis=1).sum(level=economy)/cat_info['pcwgt'].sum(level=economy)
+#print('GDP per Prov!!! #2')
+#print(df['gdp_pc_prov'])
 # ^ per capita income (in local currency), regional average
 
 df['gdp_pc_nat'] = cat_info[['pcinc','pcwgt']].prod(axis=1).sum()/cat_info['pcwgt'].sum()
@@ -295,11 +333,14 @@ print(cat_info.head())
 (100*cat_info.loc[cat_info.eval('c<pov_line'),'pcwgt'].sum(level=economy)
  /cat_info['pcwgt'].sum(level=economy)).to_frame(name='poverty_rate').to_csv('../inputs/'+myCountry+'/regional_poverty_rate.csv')
 
+
+
 # Shouldn't be losing anything here
 cat_info = cat_info.loc[cat_info['pcwgt'] != 0]
 print('Check total population:',cat_info.pcwgt.sum())
-if myCountry == 'RO':
-    cat_info.to_csv('~/Desktop/tmp/RO_drops.csv')
+
+# if myCountry == 'RO':
+#     cat_info.to_csv('~/Desktop/tmp/RO_drops.csv')
 # cat_info.dropna(inplace=True,how='any')
 # Get rid of househouseholds with 0 consumption
 if myCountry == 'BO':
@@ -312,15 +353,22 @@ if myCountry == 'BO':
     # Save total populations to file to compute fa from population affected
     cat_info.pcwgt.sum(level = 0).to_frame().rename({'pcwgt':'population'}, axis = 1).to_csv(os.path.join('../inputs/',myCountry,'population_by_state.csv'))
 
+
+print('testing cat_info')
+print(cat_info)
+
 # Exposure
 print('check:',cat_info.shape[0],'=?',cat_info.dropna().shape[0])
 
-#cat_info.to_csv('~/Desktop/tmp/check.csv')
+cat_info.to_csv('C:\\Users\\turne\\Documents\\WB\\src\\tmp\\cat_info.csv')
 cat_info =cat_info.dropna()
+
+
+
 
 # Cleanup dfs for writing out
 cat_info_col = [economy,'province','hhid','region','pcwgt','aewgt','hhwgt','np','score','v','v_ag','c','pcinc_ag_gross',
-                'pcsoc','social','c_5','hhsize','ethnicity','hhsize_ae','gamma_SP','k','quintile','ispoor','ismiddleclass','isrural','issub',
+                'pcsoc','social','c_5','hhsize','ethnicity','hhsize_ae','gamma_SP','k','quintile','ispoor','isrural','issub',
                 'pcinc','aeinc','pcexp','pov_line','SP_FAP','SP_CPP','SP_SPS','nOlds','has_ew',
                 'SP_PBS','SP_FNPF','SPP_core','SPP_add','axfin','pcsamurdhi','gsp_samurdhi','frac_remittance','N_children']
 cat_info = cat_info.drop([i for i in cat_info.columns if (i in cat_info.columns and i not in cat_info_col)],axis=1)
@@ -334,6 +382,7 @@ special_event=None
 
 # SL FLAG: get_hazard_df returns two of the same flooding data, and doesn't use the landslide data that is analyzed within the function.
 df_haz,df_tikina = get_hazard_df(myCountry,economy,agg_or_occ='Agg',rm_overlap=True,special_event=special_event)
+
 if myCountry == 'FJ': _ = get_SLR_hazard(myCountry,df_tikina)
 
 # Edit & Shuffle provinces
@@ -382,9 +431,6 @@ if myCountry == 'PH':
 
     df_haz['value_destroyed'] = df_haz[['value_destroyed_prv','value_destroyed_pub']].sum(axis=1)
     df_haz['hh_share'] = (df_haz['value_destroyed_prv']/df_haz['value_destroyed']).fillna(1.)
-    
-    df_haz.to_csv('~/Desktop/hh_share.csv')
-    #assert(False)
     # Weird things can happen for rp=2000 (negative losses), but they're < 10E-5, so we don't worry much about them
     #df_haz.loc[df_haz.hh_share>1.].to_csv('~/Desktop/hh_share.csv')
 
@@ -418,7 +464,8 @@ if myCountry == 'PH':
 elif (myCountry == 'FJ' 
       or myCountry == 'SL' 
       or myCountry == 'RO'
-      or myCountry == 'BO'): pass
+      or myCountry == 'BO'
+      or myCountry == 'AR'): pass
 # For FJ:
 # --> fa is losses/(exposed_value*v)
 #hazard_ratios['frac_destroyed'] = hazard_ratios['fa'] 
@@ -430,7 +477,9 @@ elif (myCountry == 'FJ'
 # Frac value destroyed = SUM_i(k*v*fa)
 
 # Merge hazard_ratios with cat_info
+
 hazard_ratios = pd.merge(hazard_ratios.reset_index(),cat_info.reset_index(),on=economy,how='outer')
+hazard_ratios.to_csv('C:\\Users\\turne\\Documents\\WB\\src\\tmp\\hazard_ratios.csv')
 
 # Reduce vulnerability by reduction_vul if hh has access to early warning:
 hazard_ratios.loc[(hazard_ratios.hazard!='EQ')
@@ -450,13 +499,16 @@ if myCountry == 'SL': hazard_ratios['frac_destroyed'] = hazard_ratios[['v','fa']
 if myCountry == 'RO': 
     # This is slightly tricky...
     # For RO, we're using different hazard inputs for EQ and PF, and that's why they're treated differently below
-    # NB: these inputs come from the library lib_collect_hazard_data_RO (this script doesn't get called)
+    # NB: these inputs come from the library lib_collect_hazard_data_RO 
     hazard_ratios.loc[hazard_ratios.hazard=='EQ','frac_destroyed'] = hazard_ratios.loc[hazard_ratios.hazard=='EQ','fa'].copy()
     # ^ EQ hazard is based on "caploss", which is total losses expressed as fraction of total capital stock (currently using gross, but could be net?) 
     hazard_ratios.loc[hazard_ratios.hazard=='PF','frac_destroyed'] = hazard_ratios.loc[hazard_ratios.hazard=='PF',['v','fa']].prod(axis=1)
     # ^ PF hazard is based on "popaff", which is the affected population, and "affected" could be anything. So we're applying the vulnerability curve to this hazard.
     
 if myCountry == 'BO': hazard_ratios['frac_destroyed'] = hazard_ratios[['v','fa']].prod(axis=1)
+
+#we do not treat vulnerability for fluvial and pluvial flooding differently 
+if myCountry == 'AR': hazard_ratios['frac_destroyed'] = hazard_ratios[['v','fa']].prod(axis=1)
 
 
 if 'hh_share' not in hazard_ratios.columns: hazard_ratios['hh_share'] = None
@@ -586,7 +638,7 @@ if myCountry != 'SL' and myCountry != 'BO' and not special_event:
     hazard_ratios = hazard_ratios.fillna(0)
 
 hazard_ratios = hazard_ratios.append(hazard_ratios_drought).fillna(0)
-hazard_ratios[[_ for _ in ['fa','v_mean','fa_ag','v_ag_mean'] if _ in hazard_ratios.columns]].mean(level=event_level).to_csv('tmp/fa_v.csv')
+#hazard_ratios[[_ for _ in ['fa','v_mean','fa_ag','v_ag_mean'] if _ in hazard_ratios.columns]].mean(level=event_level).to_csv('tmp/fa_v.csv')
 
 # check
 #hazard_renorm = pd.DataFrame({'total_k':hazard_ratios[['k','pcwgt']].prod(axis=1),
@@ -603,21 +655,21 @@ _rho = float(df['rho'].mean())
 print('Running hh_reco_rate optimization')
 hazard_ratios['hh_reco_rate'] = 0
 
-if True:
-    v_to_reco_rate = {}
-    try:
-        v_to_reco_rate = pickle.load(open('../optimization_libs/'+myCountry+('_'+special_event if special_event != None else '')+'_v_to_reco_rate.p','rb'))
-        #pickle.dump(v_to_reco_rate, open('../optimization_libs/'+myCountry+'_v_to_reco_rate_proto2.p', 'wb'),protocol=2)
-    except: print('Was not able to load v to hh_reco_rate library from ../optimization_libs/'+myCountry+'_v_to_reco_rate.p')
+v_to_reco_rate = {}
+try:
+    v_to_reco_rate = pickle.load(open('../optimization_libs/'+myCountry+('_'+special_event if special_event != None else '')+'_v_to_reco_rate.p','rb'))
+    #pickle.dump(v_to_reco_rate, open('../optimization_libs/'+myCountry+'_v_to_reco_rate_proto2.p', 'wb'),protocol=2)
+except: print('Was not able to load v to hh_reco_rate library from ../optimization_libs/'+myCountry+'_v_to_reco_rate.p')
 
-    hazard_ratios.loc[hazard_ratios.index.duplicated(keep=False)].to_csv('~/Desktop/tmp/dupes.csv')
-    assert(hazard_ratios.loc[hazard_ratios.index.duplicated(keep=False)].shape[0]==0)
+#hazard_ratios.loc[hazard_ratios.index.duplicated(keep=False)].to_csv('~/Desktop/tmp/dupes.csv')
+assert(hazard_ratios.loc[hazard_ratios.index.duplicated(keep=False)].shape[0]==0)
 
-    hazard_ratios['hh_reco_rate'] = hazard_ratios.apply(lambda x:optimize_reco(v_to_reco_rate,_pi,_rho,x['v']),axis=1)
-    try: 
-        pickle.dump(v_to_reco_rate,open('../optimization_libs/'+myCountry+('_'+special_event if special_event != None else '')+'_v_to_reco_rate.p','wb'))
-        print('gotcha')
-    except: print('didnt getcha')
+hazard_ratios['hh_reco_rate'] = hazard_ratios.apply(lambda x:optimize_reco(v_to_reco_rate,_pi,_rho,x['v']),axis=1)
+try: 
+    pickle.dump(v_to_reco_rate,open('../optimization_libs/'+myCountry+('_'+special_event if special_event != None else '')+'_v_to_reco_rate.p','wb'))
+    print('gotcha')
+except: print('didnt getcha')
+
 
 #except:
 #    for _n, _i in enumerate(hazard_ratios.index):
@@ -652,10 +704,7 @@ cat_info, hazard_ratios = get_asset_infos(myCountry,cat_info,hazard_ratios,df_ha
 df.to_csv(intermediate+'/macro'+('_'+special_event if special_event is not None else '')+'.csv',encoding='utf-8', header=True,index=True)
 
 cat_info = cat_info.drop([icol for icol in ['level_0','index'] if icol in cat_info.columns],axis=1)
-
-try: make_regional_inputs_summary_table(myCountry,cat_info.copy()) # this is for PH
-except: pass
-
+#cat_info = cat_info.drop([i for i in ['province'] if i != economy],axis=1)
 cat_info.to_csv(intermediate+'/cat_info'+('_'+special_event if special_event is not None else '')+'.csv',encoding='utf-8', header=True,index=True)
 
 
@@ -679,4 +728,4 @@ summary_df.to_csv(intermediate+'/gdp.csv')
 ##############
 # Write out hazard ratios
 hazard_ratios= hazard_ratios.drop(['frac_destroyed','grdp_to_assets'],axis=1).drop(["flood_fluv_def"],level="hazard")
-hazard_ratios.dropna().to_csv(intermediate+'/hazard_ratios'+('_'+special_event if special_event is not None else '')+'.csv',encoding='utf-8', header=True)
+hazard_ratios.to_csv(intermediate+'/hazard_ratios'+('_'+special_event if special_event is not None else '')+'.csv',encoding='utf-8', header=True)
